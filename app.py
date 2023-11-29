@@ -27,6 +27,15 @@ async def rb_inventory(connection: aio_pika.Connection, body: bytes) -> None:
     return
 
 
+async def rb_deliver(connection: aio_pika.Connection, body: bytes) -> None:
+    channel = await connection.channel()
+    await channel.default_exchange.publish(
+        aio_pika.Message(body=body),
+        routing_key="rb.deliver",
+    )
+    return
+
+
 async def process_rollback(
     message: aio_pika.abc.AbstractIncomingMessage,
     connection: aio_pika.Connection,  # Add connection parameter
@@ -45,6 +54,8 @@ async def process_rollback(
                 await rb_payment(connection=connection, body=message.body)
             case 3:
                 await rb_inventory(connection=connection, body=message.body)
+            case 4:
+                await rb_deliver(connection=connection, body=message.body)
             case _:
                 return
 
@@ -69,9 +80,9 @@ async def main() -> None:
     queue = await channel.declare_queue(name="dl", arguments={
                                                     'x-dead-letter-exchange': 'amq.direct',
                                                     })
-    queue_rb_payment = await channel.declare_queue("rb.payment")
-    queue_rb_inventory = await channel.declare_queue("rb.inventory")
-    queue_rb_deliver = await channel.declare_queue("rb.deliver")
+    await channel.declare_queue("rb.payment")
+    await channel.declare_queue("rb.inventory")
+    await channel.declare_queue("rb.deliver")
 
     print(' [*] Waiting for messages. To exit press CTRL+C')
 
