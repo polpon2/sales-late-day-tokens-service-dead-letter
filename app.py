@@ -1,60 +1,91 @@
-import pika, sys, os, json
-from dotenv import load_dotenv
-import requests
+import asyncio, aio_pika, json
 
-load_dotenv()
-
-bucket_name = "toktik-s3"
-
-def request_dead(file: str):
-    # url = os.getenv('COMPLETED_ENDPOINT')
-
-    # try:
-    #     requests.post(url, json = json.loads(file))
-    # except: # Set default
-    #     requests.post("http://localhost:8000/api/process-failed", json = json.loads(file))
-    return True
-
-
-def callback(ch, method, properties, body):
-    body: str = body.decode('utf-8')
-    # body: dict = json.loads(body)
-
-    print(f" [x] DEAD - {body}")
-
-    request_dead(body)
+async def rb_order(connection: aio_pika.Connection, body: bytes) -> None:
+    channel = await connection.channel()
+    await channel.default_exchange.publish(
+        aio_pika.Message(body=body),
+        routing_key="rb.order",
+    )
     return
 
 
-def main():
+async def rb_payment(connection: aio_pika.Connection, body: bytes) -> None:
+    channel = await connection.channel()
+    await channel.default_exchange.publish(
+        aio_pika.Message(body=body),
+        routing_key="rb.payment",
+    )
+    return
+
+
+async def rb_inventory(connection: aio_pika.Connection, body: bytes) -> None:
+    channel = await connection.channel()
+    await channel.default_exchange.publish(
+        aio_pika.Message(body=body),
+        routing_key="rb.inventory",
+    )
+    return
+
+
+async def process_rollback(
+    message: aio_pika.abc.AbstractIncomingMessage,
+    connection: aio_pika.Connection,  # Add connection parameter
+) -> None:
+    async with message.process():
+        body: dict = json.loads(message.body)
+
+        stage: int = body['stage']
+
+        print(f" [x] Received {body}")
+
+        match stage:
+            case 1:
+                await rb_order(connection=connection, body=message.body)
+            case 2:
+                await rb_payment(connection=connection, body=message.body)
+            case 3:
+                await rb_inventory(connection=connection, body=message.body)
+            case _:
+                return
+
+
+async def main() -> None:
+    connection = await aio_pika.connect_robust(
+        "amqp://rabbit-mq",
+    )
+
+    exchange_name = "dlx"
+
+    # Creating channel
+    channel = await connection.channel()
+
+    # Maximum message count which will be processing at the same time.
+    await channel.set_qos(prefetch_count=10)
+
+    # Declaring exchange dl
+    exchange = await channel.declare_exchange(exchange_name, type='direct')
+
+    # Declaring queue
+    queue = await channel.declare_queue(name="dl", arguments={
+                                                    'x-dead-letter-exchange': 'amq.direct',
+                                                    })
+    queue_rb_payment = await channel.declare_queue("rb.payment")
+    queue_rb_inventory = await channel.declare_queue("rb.inventory")
+    queue_rb_deliver = await channel.declare_queue("rb.deliver")
+
+    print(' [*] Waiting for messages. To exit press CTRL+C')
+
+    # Binding dl exchange with queue
+    await queue.bind(exchange=exchange)
+
+    await queue.consume(lambda message: process_rollback(message, connection))
+
     try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbit-mq', port=5672))
-    except:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        # Wait until terminate
+        await asyncio.Future()
+    finally:
+        await connection.close()
 
-    channel = connection.channel()
 
-    channel.exchange_declare(exchange='dlx', exchange_type='direct')
-
-    channel.queue_declare(queue='dl',
-                        arguments={
-                                'x-message-ttl': 5000,
-                                'x-dead-letter-exchange': 'amq.direct',
-                        })
-
-    channel.queue_bind(exchange='dlx', queue='dl')
-
-    channel.basic_consume(queue='dl', on_message_callback=callback, auto_ack=True)
-
-    print(' [*] Waiting for dead messages. To exit press CTRL+C')
-    channel.start_consuming()
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print('Interrupted')
-        try:
-            sys.exit(0)
-        except SystemExit:
-            os._exit(0)
+if __name__ == "__main__":
+    asyncio.run(main())
