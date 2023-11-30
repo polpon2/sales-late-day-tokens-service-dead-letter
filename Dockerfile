@@ -24,5 +24,6 @@ COPY --from=builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
 WORKDIR /work
 COPY . .
+RUN opentelemetry-bootstrap --action=install
 
-ENTRYPOINT ["python", "-u", "app.py"]
+ENTRYPOINT ["opentelemetry-instrument", "python", "-u", "app.py"]
