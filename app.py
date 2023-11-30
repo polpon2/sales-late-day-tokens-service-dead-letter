@@ -1,4 +1,20 @@
 import asyncio, aio_pika, json
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+# Sets provider
+provider = TracerProvider()
+
+# Sets processor for span
+processor = BatchSpanProcessor(ConsoleSpanExporter())
+provider.add_span_processor(processor)
+
+# Sets the global default tracer provider
+trace.set_tracer_provider(provider)
+
+# Creates a tracer from the global tracer provider
+tracer = trace.get_tracer(__name__)
 
 async def rb_order(connection: aio_pika.Connection, body: bytes) -> None:
     channel = await connection.channel()
